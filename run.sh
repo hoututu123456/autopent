@@ -10,6 +10,36 @@ NC='\033[0m' # No Color
 
 set -euo pipefail
 
+# Parse command line arguments
+FORCE_RAG=false
+SKIP_RAG=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force-rag)
+            FORCE_RAG=true
+            shift
+            ;;
+        --skip-rag)
+            SKIP_RAG=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --force-rag    Force rebuild RAG knowledge base"
+            echo "  --skip-rag     Skip RAG initialization"
+            echo "  --help, -h     Show this help message"
+            exit 0
+            ;;
+        *)
+            echo -e "${YELLOW}[WARN] Unknown option: $1${NC}"
+            shift
+            ;;
+    esac
+done
+
 echo -e "${GREEN}==================================================${NC}"
 echo -e "${GREEN}      AutoPentestAI - Autonomous Security Platform${NC}"
 echo -e "${GREEN}==================================================${NC}"
@@ -427,11 +457,52 @@ if [ $? -ne 0 ]; then
 fi
 
 # 6. RAG Initialization
-echo -e "${YELLOW}[INFO] Initializing Knowledge Base (RAG)...${NC}"
-# Use HF Mirror to avoid connection timeout in China
-"$VENV_PY" scripts/init_rag.py
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[WARNING] RAG Initialization failed. Semantic search might be unavailable.${NC}"
+if [ "$SKIP_RAG" = true ]; then
+    echo -e "${YELLOW}[INFO] Skipping RAG initialization (--skip-rag specified)${NC}"
+else
+    RAG_DATA_DIRS=("data/knowledge" "data/skills" "data/vulndb" "data/playbooks" "data/external/defense")
+    RAG_DB_DIR="data/rag"
+    
+    need_rag_update() {
+        if [ "$FORCE_RAG" = true ]; then
+            return 0
+        fi
+        
+        if [ ! -d "$RAG_DB_DIR" ]; then
+            return 0
+        fi
+        
+        local db_mtime
+        db_mtime=$(stat -c %Y "$RAG_DB_DIR" 2>/dev/null || echo "0")
+        
+        for dir in "${RAG_DATA_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+                local newest_file_mtime
+                newest_file_mtime=$(find "$dir" -type f -name "*.md" -exec stat -c %Y {} \; 2>/dev/null | sort -n | tail -1 || echo "0")
+                if [ "$newest_file_mtime" -gt "$db_mtime" ]; then
+                    return 0
+                fi
+            fi
+        done
+        
+        return 1
+    }
+    
+    if need_rag_update; then
+        if [ "$FORCE_RAG" = true ]; then
+            echo -e "${YELLOW}[INFO] Force rebuilding RAG knowledge base (--force-rag specified)${NC}"
+        else
+            echo -e "${YELLOW}[INFO] RAG data source updated, rebuilding knowledge base...${NC}"
+        fi
+        "$VENV_PY" scripts/init_rag.py
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}[WARNING] RAG Initialization failed. Semantic search might be unavailable.${NC}"
+        fi
+    else
+        echo -e "${GREEN}[INFO] RAG knowledge base is up-to-date, skipping initialization.${NC}"
+        echo -e "${YELLOW}[TIP] Use --force-rag to force rebuild, or --skip-rag to skip entirely.${NC}"
+    fi
+fi
 fi
 
 # 7. Launch
