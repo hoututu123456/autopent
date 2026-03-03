@@ -1,0 +1,301 @@
+# 7. 过滤器：?{...} 筛选审计结果 | SSA.to
+
+- 来源: https://ssa.to/en/syntaxflow-guide/statements/sf-filter
+- 抓取时间: 2026-02-06T07:30:41Z
+
+---
+经过前面的学习，您已经基本掌握了 SyntaxFlow 的执行原理和基本规则的编写方法。接下来，我们将介绍一个强大的功能—— 分析值的筛选过滤 。通过使用 ?{...} 结构，您可以过滤掉不需要的审计值或排除那些没有漏洞的值，从而提升审计的精准度和效率。
+
+- 简介
+- 分析值筛选过滤语法定义 运算符概览 语法结构
+- 使用实例与解释 案例一：审计 DocumentBuilderFactory 的配置以防止 XXE 漏洞
+- 高级特性：根据参数筛选方法 新语法： ?(...)
+- 实战中的注意事项 1. 上下文敏感 2. 性能考虑 3. 追踪的精确性 4. 处理递归和循环
+- 最佳实践 1. 明确目标方法或变量 2. 合理设置追踪深度 3. 结合其他过滤条件 4. 模块化编写规则 5. 定期审查和更新规则
+- 总结
+
+- 运算符概览
+- 语法结构
+
+- 案例一：审计 DocumentBuilderFactory 的配置以防止 XXE 漏洞
+
+- 新语法： ?(...)
+
+- 1. 上下文敏感
+- 2. 性能考虑
+- 3. 追踪的精确性
+- 4. 处理递归和循环
+
+- 1. 明确目标方法或变量
+- 2. 合理设置追踪深度
+- 3. 结合其他过滤条件
+- 4. 模块化编写规则
+- 5. 定期审查和更新规则
+
+## 简介 ​
+
+在静态代码分析和安全审计过程中， 分析值的筛选过滤 （Analysis Value Filtering）是一个至关重要的技术。它允许审计员通过条件表达式精确控制哪些数据流继续参与进一步的审计分析，从而聚焦于真正潜在的安全风险。 SyntaxFlow 提供了 ?{...} 结构，使得这种筛选变得简单而强大。
+
+通过 分析值筛选过滤 ，您可以：
+
+- 排除不相关的结果 ，减少噪音，提升审计效率。
+- 聚焦潜在的安全漏洞 ，确保审计过程更加精准。
+- 自定义过滤条件 ，适应不同的审计需求和场景。
+
+## 分析值筛选过滤语法定义 ​
+
+在 SyntaxFlow 中， ?{...} 结构用于定义过滤条件。通过条件表达式，您可以指定复杂的逻辑来筛选需要关注的审计值。
+
+### 运算符概览 ​
+
+以下是 SyntaxFlow 中可用的过滤运算符及其说明：
+
+### 语法结构 ​
+
+```
+filterItem
+    : filterItemFirst                            #First
+    ...
+    | '->'                                       # NextFilter
+    | '#>'                                       # DefFilter
+    | '-->'                                      # DeepNextFilter
+    | '-{' (recursiveConfig)? '}->'             # DeepNextConfigFilter
+    | '#->'                                      # TopDefFilter
+    | '#{' (recursiveConfig)? '}->'             # TopDefConfigFilter
+    | '?{' conditionExpression '}'              # OptionalFilter
+    ...
+    ;
+conditionExpression
+    : '(' conditionExpression ')'                     # ParenCondition
+    | filterExpr                                       # FilterCondition        // filter dot(.)Member and fields
+    | Opcode ':' opcodes (',' opcodes)* ','?          # OpcodeTypeCondition    // something like .(call, phi)
+    | Have ':' stringLiteralWithoutStarGroup           # StringContainHaveCondition // something like have: 'a', 'b'
+    | HaveAny ':' stringLiteralWithoutStarGroup        # StringContainAnyCondition // something like any: 'a', 'b'
+    | VersionIn ':' versionInExpression                # VersionInCondition
+    | negativeCondition conditionExpression           # NotCondition
+    | conditionExpression '&&' conditionExpression    # FilterExpressionAnd
+    | conditionExpression '||' conditionExpression    # FilterExpressionOr
+    ;
+```
+
+- ?{conditionExpression} ：用于定义过滤条件，包含在 {} 内的条件表达式。
+- conditionExpression ：支持多种条件逻辑，包括嵌套、操作码检查、字符串包含等。
+
+## 使用实例与解释 ​
+
+通过具体的代码案例，结合 SyntaxFlow 的语法规则，可以更直观地理解 分析值筛选过滤 的应用。
+
+### 案例一：审计 DocumentBuilderFactory 的配置以防止 XXE 漏洞 ​
+
+背景 ：XML 外部实体（XXE）攻击是一种常见的安全漏洞，通过未正确配置的 XML 解析器，攻击者可以读取或修改服务器上的敏感数据。 DocumentBuilderFactory 类在解析 XML 时若未正确设置安全属性，可能会导致 XXE 漏洞。
+
+```
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+public class TestXXE {
+    public static void main(String[] args) throws Exception {
+        String xmlStr = "<!DOCTYPE foo [ <!ENTITY xxe SYSTEM \"file:///etc/passwd\" >]><foo>&xxe;</foo>";
+        // 这行代码将被下面的规则捕获
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        DocumentBuilder builder = factory.newDocumentBuilder();
+        InputStream stream = new ByteArrayInputStream(xmlStr.getBytes("UTF-8"));
+        org.w3c.dom.Document doc = builder.parse(stream);
+        doc.getDocumentElement().normalize();
+    }
+}
+```
+
+```
+// 审计因为未设置 setFeature 等安全策略造成的 XXE 漏洞
+desc(
+    "Title": "审计因为未设置 setFeature 等安全策略造成的XXE漏洞",
+    "Fix": "修复方案：需要用户设置 setFeature / setXIncludeAware / setExpandEntityReferences 等安全配置"
+)
+// 捕获创建 DocumentBuilderFactory 对象时的实例
+$factories = DocumentBuilderFactory.newInstance();
+// 过滤出未设置安全属性的 DocumentBuilderFactory 实例
+$factories?{!((.setFeature) || (.setXIncludeAware) || (.setExpandEntityReferences))} as $entry;
+// 追踪 $entry 中所有 Builder 对象的 parse 方法调用
+$entry.*Builder().parse(* #-> as $source;
+// 检查 parse 方法的调用源是否安全
+check $source then "XXE Attack" else "XXE Safe";
+```
+
+将上述规则保存为 xxe.sf ，并使用以下命令进行审计：
+
+```
+yak ssa -t . --program xxe && yak sf --program xxe xxe.sf
+```
+
+输出示例 ：
+
+```
+[INFO] 2024-06-26 14:58:24 [ssacli:272] syntax flow query result:
+rule md5 hash: f3dde2cbbb200606c3361adb0f276c0e
+rule preview: desc(     "Title": "审计因为未设置 setF...en "XXE Attack" else "XXE Safe";
+description: {Title: "审计因为未设置 setFeature 等安全策略造成的XXE漏洞", Fix: "修复方案：需要用户设置 setFeature / setXIncludeAware / setExpandEntityReferences 等安全配置", $source: "XXE Attack"}
+Result Vars:
+  factories:
+    t1325817: Undefined-DocumentBuilderFactory.newInstance(valid)()
+        XXE.java:17:65 - 17:78
+  entry:
+    t1325817: Undefined-DocumentBuilderFactory.newInstance(valid)()
+        XXE.java:17:65 - 17:78
+  source:
+    t1325822: Undefined-ByteArrayInputStream
+        XXE.java:18:33 - 18:79
+    ...
+```
+
+- $factories = DocumentBuilderFactory.newInstance(); ：捕获 DocumentBuilderFactory 实例的创建，并存储在 $factories 中。
+- $unsafeFactories = $factories?{!((.setFeature) || (.setXIncludeAware) || (.setExpandEntityReferences))} as $entry; ： 使用 ?{...} 结构过滤出未调用 .setFeature 、 .setXIncludeAware 或 .setExpandEntityReferences 方法的 DocumentBuilderFactory 实例。 将过滤后的结果存储在 $entry 中。
+- $entry.*Builder().parse(* #-> as $source; ：追踪 $entry 中所有 Builder 对象调用 parse 方法，并将其参数存储在 $source 中。
+- check $source then "XXE Attack" else "XXE Safe"; ：检查 parse 方法的调用源，若源头未被安全配置保护，则标记为 "XXE Attack"，否则标记为安全。
+
+- 使用 ?{...} 结构过滤出未调用 .setFeature 、 .setXIncludeAware 或 .setExpandEntityReferences 方法的 DocumentBuilderFactory 实例。
+- 将过滤后的结果存储在 $entry 中。
+
+通过这种方式， SyntaxFlow 能够精准地定位未正确配置 DocumentBuilderFactory 实例的 parse 方法调用，帮助开发和安全团队及时发现和修复潜在的 XXE 漏洞。
+
+## 高级特性：根据参数筛选方法 ​
+
+我们经常会遇到这么一个需求：找到某个参数符合某种条件的方法调用。
+
+例如：
+在Java内置规则检测XXE漏洞的时候，有这么一条规则："检测第一个参数为 http://xml.org/sax/features/external-general-entities，第二个参数为false的XMLReader.setFeature方法"。 这种情况下，我们如何使用 ?{...} 结构实现上述需求呢？
+
+这种规则编写相较于其它过滤规则编写比较困难，原因是SyntaxFlow是比较"线性的"，我们编写的时候一般是线性从左到右写规则。
+但参数的获取是通过括号语法 (...) ,而对括号里面参数进行条件过滤希望的又是影响到外面方法调用的结果。
+这里的思维就是 进去括号里面 -> 获取参数 -> 筛选参数 -> 退出括号 -> 通过参数筛选过滤方法调用 ,是非线性的。如下：
+
+```
+method( * ?{...} ) as $result
+```
+
+很明显可以发现，无论 ?{...} 的条件如何， $result 的结果都不会变。
+那么我们如何使用SyntaxFlow实现上述需求呢？
+有一种方式是借助 nativeCall 来实现。
+
+我们以上述检测XXE的需求为例子，使用NativeCall可以写成下面的形式：
+
+```
+    XMLReader.setFeature()?{
+<getActualParams><slice(index=1)>?{=="http://xml.org/sax/features/external-general-entities"}
+&&
+<getActualParams><slice(index=2)>?{==false}
+} as $result
+```
+
+解释:
+
+- XMLReader.setFeature() ：表示我们要查找的目标方法。
+- ?{...} ：用于筛选符合条件的参数。
+- <getActualParams> ：获取方法调用的实际参数的nativeCall。
+- <slice(index=1)> ：获取第一个参数。
+
+可以发现，虽然借用nativeCall可以满足需求了，但是存在一定的弊端。
+
+- nativeCall 的使用会增加规则的复杂度，可能导致规则的可读性下降。
+- 使用nativeCall无法继续使用逗号语法来切分参数，需要使用 <slice> 来获取参数，这可能会导致规则的可维护性降低。
+
+为了实现上述需求，我们引入新语法： ?(...)
+
+### 新语法： ?(...) ​
+
+?(...) 语法允许我们在方法调用中直接对参数进行筛选，简化了规则的编写。
+
+如下：method的?()内调用了 ?{...} 筛选语法来过滤参数，如果参数被过滤，那么其对应的方法调用也会被过滤掉。因此最后的 $result 是受到过滤条件影响的。
+
+```
+method?(*?{...}) as $result
+```
+
+我们还是以刚才XXE的规则为例，现在可以写成以下形式:
+
+```
+XMLReader.setFeature?( ,*?{=="http://xml.org/sax/features/external-general-entities",?{==false}) as $result
+```
+
+解释:
+
+- XMLReader.setFeature? ：表示我们要查找的目标方法。
+- *?{=="http://xml.org/sax/features/external-general-entities" 表示第一个参数需要等于 http://xml.org/sax/features/external-general-entities 。
+- ?{==false} 表示第二个参数需要等于 false 。
+
+## 实战中的注意事项 ​
+
+在实际应用中，使用 分析值的筛选过滤 时需要注意以下几点：
+
+### 1. 上下文敏感 ​
+
+理解当前代码的上下文非常重要，尤其是在处理复杂逻辑或大型代码库时。使用 -{}-> 运算符来设置适当的追踪参数，可以帮助维持追踪的可管理性。
+
+### 2. 性能考虑 ​
+
+在大型项目中，使用 --> 或 #-> 可能会导致性能开销。建议在可能的情况下，限制追踪的深度或明确追踪的起始点和终点，以提高审计效率。
+
+### 3. 追踪的精确性 ​
+
+使用运算符时，需要确保理解每个符号的具体含义，以便精确地捕捉到所需的数据流和定义点。避免误匹配和漏匹配。
+
+### 4. 处理递归和循环 ​
+
+在遇到递归函数或循环结构时，需谨慎设置追踪深度和条件，以防止无限追踪或遗漏重要的追踪点。
+
+## 最佳实践 ​
+
+为了充分发挥 分析值的筛选过滤 的优势，建议遵循以下最佳实践：
+
+### 1. 明确目标方法或变量 ​
+
+确保目标方法或变量名准确无误，以避免误匹配和漏匹配。例如，在定义规则时，仔细检查方法名和变量名的拼写。
+
+### 2. 合理设置追踪深度 ​
+
+根据代码的复杂度和实际需求，合理设置追踪深度 或使用限定条件，避免过度追踪导致性能问题。
+
+### 3. 结合其他过滤条件 ​
+
+分析值的筛选过滤 可以与其他过滤条件（如参数类型、返回值等）结合使用，提升规则的精准度。例如，可以结合方法参数的类型或调用环境，进一步筛选潜在的风险点。
+
+### 4. 模块化编写规则 ​
+
+将复杂的审计任务分解为多个模块，每个模块专注于特定的链式调用层级，提升规则的可读性和可维护性。
+
+### 5. 定期审查和更新规则 ​
+
+随着代码库的演进，定期审查和更新审计规则，确保其始终适用于最新的代码结构和调用模式，保持审计的有效性。
+
+## 总结 ​
+
+分析值的筛选过滤 通过使用 ?{...} 结构，赋予了 SyntaxFlow 更强大的数据流控制能力。它允许审计员根据复杂的条件表达式，精准地筛选出需要关注的审计值，从而聚焦于潜在的安全风险，提升审计的效率和准确性。
+
+结合实际案例的应用，本文展示了如何利用 SyntaxFlow 的过滤功能，发现和防范 XXE 漏洞等安全风险。通过掌握这些高级功能，您将能够更高效地进行代码审计和安全分析，确保代码的整体安全性与稳定性。
+
+- 简介
+- 分析值筛选过滤 语法定义 运算符概览 语法结构
+- 使用实例与解释 案例一：审计 DocumentBuilderFactory 的配置以防止 XXE 漏洞
+- 高级特性：根据参数筛选方法 新语法： ?(...)
+- 实战中的注意事项 1. 上下文敏感 2. 性能考虑 3. 追踪的精确性 4. 处理递归和循环
+- 最佳实践 1. 明确目标方法或变量 2. 合理设置追踪深度 3. 结合其他过滤条件 4. 模块化编写规则 5. 定期审查和更新规则
+- 总结
+
+- 运算符概览
+- 语法结构
+
+- 案例一：审计 DocumentBuilderFactory 的配置以防止 XXE 漏洞
+
+- 新语法： ?(...)
+
+- 1. 上下文敏感
+- 2. 性能考虑
+- 3. 追踪的精确性
+- 4. 处理递归和循环
+
+- 1. 明确目标方法或变量
+- 2. 合理设置追踪深度
+- 3. 结合其他过滤条件
+- 4. 模块化编写规则
+- 5. 定期审查和更新规则

@@ -1,0 +1,131 @@
+# SyntaxFlow 规则文件介绍 | SSA.to
+
+- 来源: https://ssa.to/syntaxflow-guide/rule-intro
+- 抓取时间: 2026-02-06T07:30:26Z
+
+---
+在使用 SyntaxFlow 技术过程中，理解规则文件（ .sf 文件）的结构至关重要。这些文件包含特定的语句和表达式，用于定义如何在代码中搜索特定模式和行为。本章节将通过几个实际案例来展示规则文件的编写方法，并解释每个组成部分的功能和作用。
+
+在后面的叙述中，我们通常将 SyntaxFlow 规则简称为 SF 文件 或 SF 规则 。
+
+- 1. 通用的规则文件架构
+- 2. 规则文件案例与解读
+- 常用运算符和语法
+- 参考链接
+
+### 1. 通用的规则文件架构 ​
+
+SF 规则文件的结构通常遵循以下模式：
+
+- 描述性说明 desc ：提供规则的概览和目的。
+- 审计语句 ：定义特定的代码模式或行为来捕捉和分析。 过滤器 ：通过条件表达式过滤和选择代码的特定部分。 变量命名 as ：用于后续引用的结果命名。
+- 条件检查 check ：根据审计语句的结果来断言和输出相应的信息。
+- 漏洞输出 alert ： alert 来通知报告生成器或前端(IRify)需要重点关注的或者存在漏洞的变量信息。
+
+- 过滤器 ：通过条件表达式过滤和选择代码的特定部分。
+- 变量命名 as ：用于后续引用的结果命名。
+
+注意 ：虽然 desc 和 check 并非必须，但我们强烈建议在编写规则时包含这两个语句，以便让规则的输出更易于理解。在上述所有的内容中， 审计语句 是最核心的部分。
+
+通过这种结构化的方式，SyntaxFlow 规则文件能够高效地指导开发者识别和解决代码中的潜在问题。每个组件都是构建高效、准确的静态分析规则不可或缺的一部分。在撰写规则时，清晰地定义每个部分的作用和逻辑关系，将有助于提高规则的可读性和维护性。
+
+### 2. 规则文件案例与解读 ​
+
+```
+desc(
+    title: "Check XXE Vulnerability in DocumentBuilderFactory",
+    title_zh: "检查 DocumentBuilderFactory 中的 XXE 漏洞",
+    risk:XXE,
+    type:Vulnerability,
+    desc: <<<TEXT
+    该规则旨在检查 Java 中 DocumentBuilderFactory 的使用是否存在 XXE 漏洞。XXE（XML External Entity）漏洞可能导致敏感信息泄露或远程代码执行。通过确保 DocumentBuilderFactory 实例未设置危险特性，可以防止此类攻击。
+TEXT
+    solution: <<<TEXT
+    为了防止 XXE 漏洞，建议在创建 DocumentBuilderFactory 实例时，确保未调用 setFeature、setXIncludeAware 或 setExpandEntityReferences 方法。这样可以避免解析外部实体，从而降低 XXE 攻击的风险。
+TEXT
+)
+DocumentBuilderFactory.newInstance()?{!((.setFeature) || (.setXIncludeAware) || (.setExpandEntityReferences))} as $entry;
+$entry.*Builder().parse(* #-> as $source);
+check $source then "XXE Attack" else "XXE Safe";
+alert $source for {
+    message:"XXE Attack Detected",
+    level: high,
+}
+```
+
+解读：
+
+- desc 语句 描述规则一些基础信息。 title 和 title_zh 提供规则的标题和中文标题。 risk 指定风险类型为 XXE。 desc 和 solution 提供规则的详细描述和解决方案。其中 <<<TEXT 为heredoc语法，使用该语法使得我们可以在描述信息或者解决方案里面写各种格式的文本内容，而不用担心不符合SyntaxFlow语法错误。
+- 审计表达式 中的 ?{} 结构用于确保没有调用 setFeature 、 setXIncludeAware 或 setExpandEntityReferences 方法。 #-> 运算符追踪从 parse 方法传入的参数的顶级定义，以识别可能的攻击载体。
+- check 语句 基于 $source 的存在与否来判定是否可能存在 XXE 攻击。 如果 $source 存在，那么就会打印 XXE Attack 并继续运行后续规则，否则打印 XXE Safe 。
+- alert 语句 如果 $source 存在，那么就会输出结果，结果的风险等级为high。输出的结果可以在前端页面IRify或者导出的漏洞报告查看。
+
+- title 和 title_zh 提供规则的标题和中文标题。
+- risk 指定风险类型为 XXE。
+- desc 和 solution 提供规则的详细描述和解决方案。其中 <<<TEXT 为heredoc语法，使用该语法使得我们可以在描述信息或者解决方案里面写各种格式的文本内容，而不用担心不符合SyntaxFlow语法错误。
+
+- 如果 $source 存在，那么就会打印 XXE Attack 并继续运行后续规则，否则打印 XXE Safe 。
+
+```
+URL(* #-> * as $source).openConnection().getResponseMessage() as $sink;
+check $sink then "Request From URL" else "No Response From URL";
+alert $sink for{
+    message:"Request From URL Detected",
+    level:info,
+}
+```
+
+解读：
+
+- 此规则追踪 URL 对象创建到发起网络请求的完整流程。
+- $source 表示 URL 的来源，而 $sink 表示从该 URL 获得的响应。
+- 使用 check 语句 来确定是否成功从 URL 获取了响应。
+- 使用 alert 语句 来输出检测到的 URL 请求信息，便于后续分析。
+
+```
+Files.write(, * #-> as $params) as $sink;
+$params?{.getBytes()} as $source;
+check $source then "Local Files Writer" else "No Files Written";
+alert $source for{
+    message:"Local Files Write Detected",
+    level:info,
+}
+```
+
+解读：
+
+- 此规则检查 Files.write 方法的调用，并追踪写入操作中使用的参数。
+- 通过检查是否调用了 getBytes 方法来确认是否有数据被写入。
+
+通过上述示例，我们可以看到 SyntaxFlow 规则文件是如何构建的，以及如何利用这些规则来进行代码的静态分析和漏洞检测。在编写规则时，重要的是理解代码的运行机制和可能的安全隐患，然后使用 SyntaxFlow 提供的语法和工具来进行细致的分析。
+
+制定完善的规则文件，不仅能帮助开发者快速发现代码中的问题，还能提升整个项目的安全性和可靠性。
+
+# 下一步
+
+现在，您已经了解了 SyntaxFlow 的基本使用和规则文件的结构，建议您继续探索：
+
+- 深入学习 SyntaxFlow 的语法和功能
+- 尝试编写自己的规则来检测特定的安全漏洞
+- 分析更复杂的代码，以获得更深入的实践经验
+- 参考 SyntaxFlow 官方文档，了解高级用法和最佳实践
+
+通过不断的学习和实践，您将能够充分利用 SyntaxFlow 的强大功能，提高代码审计和静态分析的效率和准确性。
+
+# 附录
+
+## 常用运算符和语法 ​
+
+- #-> ：追踪变量的定义（Use-Def 链）。
+- ?{} ：条件过滤，确保满足特定的条件。
+- as ：为匹配的结果命名，便于后续引用。
+
+## 参考链接 ​
+
+- Yaklang 官方网站
+- SyntaxFlow 文档
+
+- 1. 通用的规则文件架构
+- 2. 规则文件案例与解读
+- 常用运算符和语法
+- 参考链接
